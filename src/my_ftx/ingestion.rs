@@ -1,15 +1,13 @@
-use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
-use futures::{SinkExt, stream, StreamExt, TryStreamExt};
+use futures::{SinkExt, stream, StreamExt};
 use futures::channel::mpsc as mpsc;
-use futures::stream::SplitStream;
 use log::{debug, error, info};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde_json::json;
 use tokio::net::TcpStream;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -24,7 +22,6 @@ fn process_orderbook<'a>(msg: Message) -> Result<OrderBook, Error> {
             Ok(event)
         }
         Err(err) => {
-            info!("Not an order event: {}", msg);
             Err(Error::try_from(err).unwrap())
         }
     }
@@ -54,11 +51,7 @@ pub async fn run_async_processor(
     let ws_stream = ftx_connect().await.expect("Failed to connect to FTX");
 
     info!("WebSocket handshake has been successfully completed");
-    let (mut ws_write, mut read) = ws_stream.split();
-
-    ws_write.send(Message::Text(
-        json!({"op": "ping"}).to_string(),
-    )).await;
+    let (ws_write, read) = ws_stream.split();
 
     let (mut write, consume_ws_writes) = mpsc::channel::<Message>(1000);
     let ws_write_consumer = tokio::spawn(async move {
@@ -68,11 +61,13 @@ pub async fn run_async_processor(
         }).forward(ws_write).await.unwrap();
     });
 
+    write.send(Message::Text(json!({"op": "ping"}).to_string())).await;
 
     let ops = channel_op(&markets, "subscribe".to_string(), "trades".to_string());
+    let mut ops = stream::iter(ops.into_iter().map(Ok));
     tokio::select! {
-    _ = stream::iter(ops.into_iter().map(Ok)).forward(&mut write) => {},
-    _ = shutdown.recv() => {
+        _ = write.send_all(&mut ops) => {},
+        _ = shutdown.recv() => {
             info!("Shut down during subscribing");
         }
     }
@@ -80,54 +75,48 @@ pub async fn run_async_processor(
 
     // todo info!("Subscribed to markets:    {}", markets);
     if !shutdown.is_shutdown() {
-        // let counter = Arc::new(Mutex::new(0));
-        // let stream_processor = read.for_each(|borrowed_message| {
-        //     // Borrowed messages can't outlive the consumer they are received from, so they need to
-        //     // be owned in order to be sent to a separate thread.
-        //     let owned_message = //borrowed_message.unwrap();
-        //         match borrowed_message {
-        //             Ok(msg) => msg,
-        //             Err(e) => {
-        //                 error!("Connection error - {}", e.to_string());
-        //                 panic!("{}", e.to_string().as_str());
-        //             }
-        //         };
-        //     let producer = producer.clone();
-        //     let output_topic = output_topic.to_string();
-        //     let saved_num: i32;
-        //     {
-        //         let mut num = counter.lock().unwrap();
-        //         *num += 1;
-        //         saved_num = *num;
-        //     }
-        //     async move {
-        //         tokio::spawn(send_to_kafka(producer, output_topic, owned_message));
-        //         info!("Count: {:?}", saved_num);
-        //         ()
-        //     }
-        // });
-        info!("Starting event loop");
-        loop {
-            tokio::select! {
-                _ = next_response(&mut read) => {
-                    info!("No more messages in stream");
-                    sleep(Duration::from_millis(1000)).await;
-                    write.send(Message::Text(json!({"op": "ping"}).to_string())).await;
-                },
-                _ = shutdown.recv() => {
-                    info!("Shut down during processing");
-                    break;
-                }
+        let counter = Arc::new(Mutex::new(0));
+        let stream_processor = read.for_each(|borrowed_message| {
+            // Borrowed messages can't outlive the consumer they are received from, so they need to
+            // be owned in order to be sent to a separate thread.
+            let owned_message = //borrowed_message.unwrap();
+                match borrowed_message {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        error!("Connection error - {}", e.to_string());
+                        panic!("{}", e.to_string().as_str());
+                    }
+                };
+            let producer = producer.clone();
+            let output_topic = output_topic.to_string();
+            let saved_num: i32;
+            {
+                let mut num = counter.lock().unwrap();
+                *num += 1;
+                saved_num = *num;
             }
-            ;
+            async move {
+                tokio::spawn(send_to_kafka(producer, output_topic, owned_message));
+                info!("Count: {:?}", saved_num);
+                ()
+            }
+        });
+        info!("Starting event loop");
+        tokio::select! {
+            _ = stream_processor => {},
+            _ = shutdown.recv() => {
+                info!("Shut down stream processing");
+            }
         }
+        ;
     }
 
     let ops = channel_op(&markets, "unsubscribe".to_string(), "trades".to_string());
     // todo info!("{} from all {}", op, markets);
     // todo handle when one fails
 
-    stream::iter(ops.into_iter().map(Ok)).forward(&mut write).await.unwrap();
+    // "forward" closes the write channel and WS sink after flushing ops
+    stream::iter(ops.into_iter().map(Ok)).forward(&mut write).await;
     drop(write);
     ws_write_consumer.await.expect("Failed to subscribe.");
 
@@ -145,22 +134,6 @@ async fn ftx_connect() -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, Err
         }
     };
     ws_stream
-}
-
-//shutdown: &mut Shutdown,
-async fn next_response(stream: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>) -> String {
-    loop {
-        let msg = stream.next().await;
-        let msg = msg.unwrap_or(Ok(Message::Text("empty".to_string())));
-        match msg {
-            Ok(Message::Text(text)) => {
-                info!("WS payload: {}", text);
-                return text;
-            }
-            Ok(msg) => { info!("Msg: {}", msg.to_string()) }
-            Err(err) => { error!("Error: {}", err.to_string()) }
-        }
-    }
 }
 
 fn channel_op(markets: &Vec<String>, op: String, channel: String) -> Vec<Message> {
