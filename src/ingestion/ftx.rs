@@ -8,8 +8,8 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::{Error, Shutdown};
-use crate::my_ftx::data_schema::{OrderBook, Subscription};
-use crate::my_ftx::interval_stream::IntervalStream;
+use crate::ingestion::data_schema::{OrderBook, Subscription};
+use crate::ingestion::interval_stream::IntervalStream;
 
 fn process_orderbook<'a>(msg: Message) -> Result<OrderBook, Error> {
     info!("Received = {}", msg.to_string());

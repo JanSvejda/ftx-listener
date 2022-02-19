@@ -10,7 +10,7 @@ pub struct Limit {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OrderBook {
-    //     "channel": "orderbook", "market": "BTC-PERP", "type": "update", "data": {}
+    //     "channel": "orderbook", "market": "BTC-PERP", "type": "update", "ingestion": {}
     pub channel: String,
     pub market: String,
     #[serde(rename = "type")]

@@ -23,7 +23,7 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 
 mod infra;
-mod my_ftx;
+mod ingestion;
 
 
 #[tokio::main]
@@ -32,25 +32,10 @@ async fn main() {
         .version(option_env!("CARGO_PKG_VERSION").unwrap_or(""))
         .about("Asynchronous computation example")
         .arg(
-            Arg::new("brokers")
-                .short("b".parse().unwrap())
-                .long("brokers")
-                .help("Broker list in kafka format")
-                .takes_value(true)
-                .default_value("localhost:9092"),
-        )
-        .arg(
             Arg::new("log-conf")
                 .long("log-conf")
                 .help("Configure the logging format (example: 'rdkafka=trace')")
                 .takes_value(true),
-        )
-        .arg(
-            Arg::new("output-topic")
-                .long("output-topic")
-                .help("Output topic")
-                .takes_value(true)
-                .required(true),
         )
         .arg(
             Arg::new("num-workers")
@@ -65,14 +50,8 @@ async fn main() {
                 .short("m".parse().unwrap())
                 .help("Comma-separated list of markets to connect to")
                 .takes_value(true)
-        )
-        .arg(
-                Arg::new("ftx-lib")
-                .short("x".parse().unwrap())
-                .help("Whether to use ftx lib https://github.com/fabianboesiger/ftx/blob/main/examples/watch_market.rs")
-                .takes_value(false)
-                .required(false)
-
+                .multiple_occurrences(true)
+                .max_occurrences(20)
         )
         .get_matches();
 
@@ -84,9 +63,10 @@ async fn main() {
     let markets: Vec<String> = matches.values_of("markets").unwrap().map(|m| m.to_owned()).collect();
     let num_workers: usize = matches.value_of_t("num-workers").unwrap();
 
+    info!("Starting ftx-listener for {}", markets.join(", "));
     let processors = (0..num_workers)
         .map(|_| {
-            tokio::spawn(my_ftx::ingestion::run_async_processor(
+            tokio::spawn(ingestion::ftx::run_async_processor(
                 markets.to_owned(),
                 Shutdown::new(shutdown_send.subscribe()),
             ))
