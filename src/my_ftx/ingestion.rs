@@ -1,6 +1,4 @@
-use std::sync::{Arc, Mutex};
-
-use futures::{SinkExt, stream, StreamExt};
+use futures::{SinkExt, stream, StreamExt, TryStreamExt};
 use futures::channel::mpsc as mpsc;
 use log::{debug, error, info};
 use rdkafka::config::ClientConfig;
@@ -15,10 +13,10 @@ use crate::{Error, Shutdown};
 use crate::my_ftx::data_schema::{OrderBook, Subscription};
 
 fn process_orderbook<'a>(msg: Message) -> Result<OrderBook, Error> {
-    info!("received = {}", msg.to_string());
+    info!("Received = {}", msg.to_string());
     match serde_json::from_str::<OrderBook>(&msg.to_string()) {
         Ok(event) => {
-            debug!("deserialized = {}", serde_json::to_string(&event).unwrap());
+            debug!("Deserialized = {}", serde_json::to_string(&event).unwrap());
             Ok(event)
         }
         Err(err) => {
@@ -57,7 +55,7 @@ pub async fn run_async_processor(
         consume_ws_writes.map(|msg| {
             info!("Send {:}", msg.to_string());
             Ok(msg)
-        }).forward(ws_write).await.unwrap();
+        }).forward(ws_write).await.expect("Failed to send message, closing forwarder.");
     });
 
     write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
@@ -72,55 +70,42 @@ pub async fn run_async_processor(
             info!("Shut down during subscribing");
         }
     }
-    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
 
-    if !shutdown.is_shutdown() {
-        let counter = Arc::new(Mutex::new(0));
-        let stream_processor = read.for_each(|borrowed_message| {
-            // Borrowed messages can't outlive the consumer they are received from, so they need to
-            // be owned in order to be sent to a separate thread.
-            let owned_message = //borrowed_message.unwrap();
-                match borrowed_message {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        error!("Connection error - {}", e.to_string());
-                        panic!("{}", e.to_string().as_str());
-                    }
-                };
-            let producer = producer.clone();
-            let output_topic = output_topic.to_string();
-            let saved_num: i32;
-            {
-                let mut num = counter.lock().unwrap();
-                *num += 1;
-                saved_num = *num;
-            }
-            async move {
-                tokio::spawn(send_to_kafka(producer, output_topic, owned_message));
-                info!("Count: {:?}", saved_num);
-            }
-        });
-        info!("Starting event loop");
+    let stream_processor = read.try_for_each(|borrowed_message| {
+        // Borrowed messages can't outlive the consumer they are received from, so they need to
+        // be owned in order to be sent to a separate thread.
+        let owned_message = borrowed_message.to_owned();
+        let producer = producer.clone();
+        let output_topic = output_topic.to_string();
+        async move {
+            tokio::spawn(send_to_kafka(producer, output_topic, owned_message));
+            Ok(())
+        }
+    });
 
-        // fixme select cancels the stream future and thereby closes connection
-        tokio::select! {
-            _ = stream_processor => {},
-            _ = shutdown.recv() => {
-                info!("Shut down stream processing");
-            }
+    info!("Starting event loop");
+    tokio::select! {
+        res = stream_processor => {
+            match res {
+                Ok(_) => {
+                    info!("FTX WebSocket Stream ended")
+                },
+                Err(e) => {
+                    error!("Processing error - {}", e.to_string());
+                }
+            };
+        },
+        _ = shutdown.recv() => {
+            info!("Shut down stream processing");
         }
     }
-    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
-
-    let ops = channel_op(&markets, "unsubscribe".to_string(), "trades".to_string());
-    let mut ops = stream::iter(ops.into_iter().map(Ok));
-    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
-    write.send_all(&mut ops).await.expect("Failed to unsubscribe");
-    // drop(write);
-    info!("Unsubscribed from markets: {}", markets.join(", "));
+    drop(write);
 
     // wait for outgoing message forwarder to finish
-    ws_write_forwarder.await.expect("Message forwarder failed.");
+    match ws_write_forwarder.await {
+        Ok(_) => info!("Message forwarder finished"),
+        Err(e) => error!("Message forwarder failed: {}", e.to_string())
+    };
     info!("Stream processor finished");
     Ok(())
 }
@@ -130,7 +115,6 @@ async fn ftx_connect() -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, Err
     let ws_stream = match conn {
         Ok((ws_stream, _)) => Ok(ws_stream),
         Err(err) => {
-            error!("Failed to connect to FTX");
             return Err(err.into());
         }
     };
