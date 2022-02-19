@@ -116,7 +116,6 @@ async fn main() {
 
     info!("Wait for system to shut down");
     drop(shutdown_send);
-
     let _ = shutdown_recv.recv();
 }
 

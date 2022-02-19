@@ -49,31 +49,31 @@ pub async fn run_async_processor(
         .expect("Producer creation error");
 
     let ws_stream = ftx_connect().await.expect("Failed to connect to FTX");
-
     info!("WebSocket handshake has been successfully completed");
     let (ws_write, read) = ws_stream.split();
 
     let (mut write, consume_ws_writes) = mpsc::channel::<Message>(1000);
-    let ws_write_consumer = tokio::spawn(async move {
+    let ws_write_forwarder = tokio::spawn(async move {
         consume_ws_writes.map(|msg| {
             info!("Send {:}", msg.to_string());
             Ok(msg)
         }).forward(ws_write).await.unwrap();
     });
 
-    write.send(Message::Text(json!({"op": "ping"}).to_string())).await;
+    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
 
     let ops = channel_op(&markets, "subscribe".to_string(), "trades".to_string());
     let mut ops = stream::iter(ops.into_iter().map(Ok));
     tokio::select! {
-        _ = write.send_all(&mut ops) => {},
+        _ = write.send_all(&mut ops) => {
+            info!("Subscribed to markets: {}", markets.join(", "));
+        },
         _ = shutdown.recv() => {
             info!("Shut down during subscribing");
         }
     }
-    ;
+    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
 
-    // todo info!("Subscribed to markets:    {}", markets);
     if !shutdown.is_shutdown() {
         let counter = Arc::new(Mutex::new(0));
         let stream_processor = read.for_each(|borrowed_message| {
@@ -98,29 +98,30 @@ pub async fn run_async_processor(
             async move {
                 tokio::spawn(send_to_kafka(producer, output_topic, owned_message));
                 info!("Count: {:?}", saved_num);
-                ()
             }
         });
         info!("Starting event loop");
+
+        // fixme select cancels the stream future and thereby closes connection
         tokio::select! {
             _ = stream_processor => {},
             _ = shutdown.recv() => {
                 info!("Shut down stream processing");
             }
         }
-        ;
     }
+    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
 
     let ops = channel_op(&markets, "unsubscribe".to_string(), "trades".to_string());
-    // todo info!("{} from all {}", op, markets);
-    // todo handle when one fails
+    let mut ops = stream::iter(ops.into_iter().map(Ok));
+    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
+    write.send_all(&mut ops).await.expect("Failed to unsubscribe");
+    // drop(write);
+    info!("Unsubscribed from markets: {}", markets.join(", "));
 
-    // "forward" closes the write channel and WS sink after flushing ops
-    stream::iter(ops.into_iter().map(Ok)).forward(&mut write).await;
-    drop(write);
-    ws_write_consumer.await.expect("Failed to subscribe.");
-
-    info!("Unsubscribed from markets");
+    // wait for outgoing message forwarder to finish
+    ws_write_forwarder.await.expect("Message forwarder failed.");
+    info!("Stream processor finished");
     Ok(())
 }
 
