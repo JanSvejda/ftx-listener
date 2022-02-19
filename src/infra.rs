@@ -56,6 +56,7 @@ pub struct Shutdown {
     notify: broadcast::Receiver<()>,
 }
 
+#[allow(dead_code)]
 impl Shutdown {
     /// Create a new `Shutdown` backed by the given `broadcast::Receiver`.
     pub fn new(notify: broadcast::Receiver<()>) -> Shutdown {

@@ -1,4 +1,4 @@
-use clap::{App, Arg};
+use clap::{Command, Arg};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info};
@@ -28,7 +28,7 @@ mod my_ftx;
 
 #[tokio::main]
 async fn main() {
-    let matches = App::new("Async example")
+    let matches = Command::new("Async example")
         .version(option_env!("CARGO_PKG_VERSION").unwrap_or(""))
         .about("Asynchronous computation example")
         .arg(
@@ -81,16 +81,12 @@ async fn main() {
     let (shutdown_send, mut shutdown_recv) = broadcast::channel(1);
 
 
-    let brokers = matches.value_of("brokers").unwrap();
     let markets: Vec<String> = matches.values_of("markets").unwrap().map(|m| m.to_owned()).collect();
-    let output_topic = matches.value_of("output-topic").unwrap();
     let num_workers: usize = matches.value_of_t("num-workers").unwrap();
 
     let processors = (0..num_workers)
         .map(|_| {
             tokio::spawn(my_ftx::ingestion::run_async_processor(
-                brokers.to_owned(),
-                output_topic.to_owned(),
                 markets.to_owned(),
                 Shutdown::new(shutdown_send.subscribe()),
             ))

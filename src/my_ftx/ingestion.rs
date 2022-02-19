@@ -1,16 +1,15 @@
 use futures::{SinkExt, stream, StreamExt, TryStreamExt};
 use futures::channel::mpsc as mpsc;
-use log::{debug, error, info};
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
+use log::{debug, error, info, warn};
 use serde_json::json;
 use tokio::net::TcpStream;
-use tokio::time::{Duration};
+use tokio::time::Duration;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::{Error, Shutdown};
 use crate::my_ftx::data_schema::{OrderBook, Subscription};
+use crate::my_ftx::interval_stream::IntervalStream;
 
 fn process_orderbook<'a>(msg: Message) -> Result<OrderBook, Error> {
     info!("Received = {}", msg.to_string());
@@ -25,27 +24,10 @@ fn process_orderbook<'a>(msg: Message) -> Result<OrderBook, Error> {
     }
 }
 
-// Creates all the resources and runs the event loop. The event loop will:
-//   1) receive a stream of messages from the `StreamConsumer`.
-//   2) filter out eventual Kafka errors.
-//   3) send the message to a thread pool for processing.
-//   4) produce the result to the output topic.
-// `tokio::spawn` is used to handle IO-bound tasks in parallel (e.g., producing
-// the messages), while `tokio::task::spawn_blocking` is used to handle the
-// simulated CPU-bound task.
 pub async fn run_async_processor(
-    brokers: String,
-    output_topic: String,
     markets: Vec<String>,
     mut shutdown: Shutdown,
 ) -> crate::Result<()> {
-    // Create the `FutureProducer` to produce asynchronously.
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
-        .set("message.timeout.ms", "5000")
-        .create()
-        .expect("Producer creation error");
-
     let ws_stream = ftx_connect().await.expect("Failed to connect to FTX");
     info!("WebSocket handshake has been successfully completed");
     let (ws_write, read) = ws_stream.split();
@@ -58,7 +40,11 @@ pub async fn run_async_processor(
         }).forward(ws_write).await.expect("Failed to send message, closing forwarder.");
     });
 
-    write.send(Message::Text(json!({"op": "ping"}).to_string())).await.expect("Ping failed");
+    let ping_interval = IntervalStream::new(Duration::from_secs(15));
+    let ping_interval = tokio::spawn(ping_interval.map(|_| {
+        Ok(Message::Text(json!({"op": "ping"}).to_string()))
+    }).forward(write.clone()));
+
 
     let ops = channel_op(&markets, "subscribe".to_string(), "trades".to_string());
     let mut ops = stream::iter(ops.into_iter().map(Ok));
@@ -75,10 +61,8 @@ pub async fn run_async_processor(
         // Borrowed messages can't outlive the consumer they are received from, so they need to
         // be owned in order to be sent to a separate thread.
         let owned_message = borrowed_message.to_owned();
-        let producer = producer.clone();
-        let output_topic = output_topic.to_string();
         async move {
-            tokio::spawn(send_to_kafka(producer, output_topic, owned_message));
+            tokio::spawn(send_out(owned_message));
             Ok(())
         }
     });
@@ -101,10 +85,15 @@ pub async fn run_async_processor(
     }
     drop(write);
 
+    // wait for ping to finish
+    match ping_interval.await {
+        Ok(_) => info!("Ping finished"),
+        Err(e) => warn!("Ping: {}", e.to_string())
+    };
     // wait for outgoing message forwarder to finish
     match ws_write_forwarder.await {
         Ok(_) => info!("Message forwarder finished"),
-        Err(e) => error!("Message forwarder failed: {}", e.to_string())
+        Err(e) => warn!("Message forwarder: {}", e.to_string())
     };
     info!("Stream processor finished");
     Ok(())
@@ -131,7 +120,7 @@ fn channel_op(markets: &Vec<String>, op: String, channel: String) -> Vec<Message
     }).map(|sub| Message::Text(json!(sub).to_string())).collect()
 }
 
-async fn send_to_kafka(producer: FutureProducer, output_topic: String, owned_message: Message) {
+async fn send_out(owned_message: Message) {
     // The body of this block will be executed on the main thread pool,
     // but we perform `expensive_computation` on a separate thread pool
     // for CPU-intensive tasks via `tokio::task::spawn_blocking`.
@@ -142,19 +131,9 @@ async fn send_to_kafka(producer: FutureProducer, output_topic: String, owned_mes
     let orderbook = match event {
         Ok(o) => o,
         Err(_) => {
-            info!("Not going to send to Kafka");
+            info!("Not going to send");
             return;
         }
     };
-    let (key, computation_result) = (orderbook.market.to_string(), serde_json::to_string(&orderbook).unwrap());
-    let produce_future = producer.send(
-        FutureRecord::to(&output_topic)
-            .key(&key)
-            .payload(&computation_result),
-        Duration::from_secs(0),
-    );
-    match produce_future.await {
-        Ok(delivery) => info!("Sent: {:?}", delivery),
-        Err((e, _)) => info!("Error: {:?}", e),
-    };
+    let (_key, _computation_result) = (orderbook.market.to_string(), serde_json::to_string(&orderbook).unwrap());
 }
