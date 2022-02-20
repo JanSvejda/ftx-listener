@@ -16,14 +16,11 @@ pub async fn run_async_processor(
     mut shutdown: Shutdown,
 ) -> crate::Result<()> {
     let mut websocket = Ws::connect(Options::from_env()).await?;
-    let market = markets.get(0).unwrap();
 
-    websocket
-        .subscribe(vec![
-            Channel::Trades(market.to_owned()),
-            Channel::Orderbook(market.to_owned()),
-        ])
-        .await?;
+    let trade_channels = markets.iter().map(|m| Channel::Trades(m.to_owned())).collect::<Vec<Channel>>();
+    let orderbook_channels = markets.iter().map(|m| Channel::Orderbook(m.to_owned())).collect::<Vec<Channel>>();
+    let channels = vec![trade_channels,orderbook_channels].concat();
+    websocket.subscribe(channels).await?;
 
     let orderbook = OrderbookSink::new(Orderbook::new(market.to_owned()));
     let (orderbook_prod, orderbook_cons) = mpsc::channel::<OrderbookData>(1000);
@@ -36,10 +33,10 @@ pub async fn run_async_processor(
         let mut orderbook_prod = orderbook_prod.clone();
         async move {
             match data {
-                (_, Data::Trade(trade)) => {
+                (Some(symbol), Data::Trade(trade)) => {
                     println!(
                         "\n{:?} {} {} at {} - liquidation = {}",
-                        trade.side, trade.size, market, trade.price, trade.liquidation
+                        trade.side, trade.size, symbol, trade.price, trade.liquidation
                     );
                 }
                 (_, Data::OrderbookData(orderbook_data)) => {
@@ -48,7 +45,7 @@ pub async fn run_async_processor(
                         Err(e) => error!("Orderbook update failed {}", e.to_string())
                     };
                 }
-                _ => panic!("Unexpected data type"),
+                _ => panic!("Unexpected data type")
             }
             Ok(())
         }
