@@ -4,6 +4,8 @@ use futures::StreamExt;
 use log::{error, info};
 use tokio::signal;
 use tokio::sync::broadcast;
+use dotenv::dotenv;
+
 use crate::infra::Shutdown;
 
 /// Error returned by most functions.
@@ -28,6 +30,7 @@ mod ingestion;
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
     let matches = Command::new("Async example")
         .version(option_env!("CARGO_PKG_VERSION").unwrap_or(""))
         .about("Asynchronous computation example")
@@ -85,7 +88,7 @@ async fn main() {
                 },
             }
         },
-        _ = processors.for_each(|_| async { () }) => {
+        _ = processors.for_each(|_| async { }) => {
             info!("Processors finished!")
         }
     };
