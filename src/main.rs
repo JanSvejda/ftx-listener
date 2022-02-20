@@ -1,10 +1,10 @@
-use clap::{Command, Arg};
+use clap::{Arg, Command};
+use dotenv::dotenv;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info};
 use tokio::signal;
 use tokio::sync::broadcast;
-use dotenv::dotenv;
 
 use crate::infra::Shutdown;
 
@@ -81,7 +81,7 @@ async fn main() {
     tokio::select! {
         res = signal::ctrl_c() => {
             match res {
-                Ok(()) => { },
+                Ok(()) => { shutdown_send.send(()).expect("Failed to shutdown gracefully"); },
                 Err(err) => {
                     error!("Unable to listen for shutdown signal: {}", err);
                     // we also shut down in case of error
@@ -91,10 +91,12 @@ async fn main() {
         _ = processors.for_each(|_| async { }) => {
             info!("Processors finished!")
         }
-    };
+    }
+    ;
 
     info!("Wait for system to shut down");
     drop(shutdown_send);
-    let _ = shutdown_recv.recv();
+    let _ = shutdown_recv.recv().await;
+    log::logger().flush();
 }
 
