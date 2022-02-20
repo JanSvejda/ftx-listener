@@ -25,7 +25,7 @@ pub async fn run_async_processor(
         ])
         .await?;
 
-    let orderbook = OrderbookSink(Orderbook::new(market.to_owned()));
+    let orderbook = OrderbookSink::new(Orderbook::new(market.to_owned()));
     let (orderbook_prod, orderbook_cons) = mpsc::channel::<OrderbookData>(1000);
     let orderbook_updater = tokio::spawn(orderbook_cons.map(|update| Ok(update)).forward(orderbook));
 
@@ -81,6 +81,12 @@ pub async fn run_async_processor(
 
 pub struct OrderbookSink {
     orderbook: Orderbook,
+}
+
+impl OrderbookSink {
+    pub fn new(orderbook: Orderbook) -> OrderbookSink {
+        OrderbookSink {orderbook}
+    }
 }
 
 impl Sink<OrderbookData> for OrderbookSink {

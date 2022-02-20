@@ -1,0 +1,6 @@
+/db
+/target
+/docs
+.idea
+.env
+.git
