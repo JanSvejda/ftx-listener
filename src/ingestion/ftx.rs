@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::io;
 use ftx::options::Options;
-use ftx::ws::{Channel, Data, Orderbook, OrderbookData, Ws};
+use ftx::ws::{Channel, Data, Orderbook, OrderbookData, Symbol, Ws};
 use futures::{Sink, SinkExt, StreamExt, TryStreamExt};
 use log::{error, info, warn};
 use std::pin::Pin;
@@ -22,8 +23,8 @@ pub async fn run_async_processor(
     let channels = vec![trade_channels,orderbook_channels].concat();
     websocket.subscribe(channels).await?;
 
-    let orderbook = OrderbookSink::new(Orderbook::new(market.to_owned()));
-    let (orderbook_prod, orderbook_cons) = mpsc::channel::<OrderbookData>(1000);
+    let orderbook = OrderbookSink::new(markets);
+    let (orderbook_prod, orderbook_cons) = mpsc::channel::<(Symbol, OrderbookData)>(1000);
     let orderbook_updater = tokio::spawn(orderbook_cons.map(|update| Ok(update)).forward(orderbook));
 
     let stream_processor = websocket.try_for_each(|borrowed_message| {
@@ -39,8 +40,8 @@ pub async fn run_async_processor(
                         trade.side, trade.size, symbol, trade.price, trade.liquidation
                     );
                 }
-                (_, Data::OrderbookData(orderbook_data)) => {
-                    match orderbook_prod.send(orderbook_data).await {
+                (Some(symbol), Data::OrderbookData(orderbook_data)) => {
+                    match orderbook_prod.send((symbol, orderbook_data)).await {
                         Ok(_) => {}
                         Err(e) => error!("Orderbook update failed {}", e.to_string())
                     };
@@ -77,26 +78,31 @@ pub async fn run_async_processor(
 }
 
 pub struct OrderbookSink {
-    orderbook: Orderbook,
+    orderbook: HashMap<Symbol, Orderbook>,
 }
 
 impl OrderbookSink {
-    pub fn new(orderbook: Orderbook) -> OrderbookSink {
-        OrderbookSink {orderbook}
+    pub fn new(markets: Vec<String>) -> OrderbookSink {
+        let book= markets.iter().map(|m| (m.clone(), Orderbook::new(m.to_owned()))).into_iter();
+        OrderbookSink {orderbook: HashMap::from_iter(book)}
     }
 }
 
-impl Sink<OrderbookData> for OrderbookSink {
+impl Sink<(Symbol, OrderbookData)> for OrderbookSink {
     type Error = Never;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: OrderbookData) -> Result<(), Self::Error> {
-        self.orderbook.update(&item);
-        print!("."); // To signify orderbook update
-        io::stdout().flush().unwrap();
+    fn start_send(mut self: Pin<&mut Self>, item: (Symbol, OrderbookData)) -> Result<(), Self::Error> {
+        if let Some(orderbook) = self.orderbook.get_mut(&item.0) {
+            orderbook.update(&item.1);
+            print!("."); // To signify orderbook update
+            io::stdout().flush().unwrap();
+        } else {
+            warn!("Attempted orderbook update for Unregistered symbol {}", item.0);
+        }
         Ok(())
     }
 
