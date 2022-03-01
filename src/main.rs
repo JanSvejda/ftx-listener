@@ -5,6 +5,7 @@ use futures::StreamExt;
 use log::{error, info};
 use tokio::signal;
 use tokio::sync::broadcast;
+use crate::digestion::TradeLogger;
 
 use crate::infra::Shutdown;
 
@@ -26,6 +27,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 mod infra;
 mod ingestion;
+mod digestion;
 
 
 #[tokio::main]
@@ -37,13 +39,13 @@ async fn main() {
         .arg(
             Arg::new("log-conf")
                 .long("log-conf")
-                .help("Configure the logging format (example: 'rdkafka=trace')")
+                .help("Configure the logging format (example: 'rdkafka=trace').")
                 .takes_value(true),
         )
         .arg(
             Arg::new("num-workers")
                 .long("num-workers")
-                .help("Number of workers")
+                .help("Number of WebSocket connections.")
                 .takes_value(true)
                 .default_value("1"),
         )
@@ -51,10 +53,19 @@ async fn main() {
             Arg::new("markets")
                 .long("markets")
                 .short("m".parse().unwrap())
-                .help("Comma-separated list of markets to connect to")
+                .help("Market to connect to, multiple markets are allowed.")
                 .takes_value(true)
                 .multiple_occurrences(true)
                 .max_occurrences(20)
+                .required(true)
+        )
+        .arg(
+            Arg::new("save-to")
+                .long("save-to")
+                .short("s".parse().unwrap())
+                .help("Folder for saving the data files. One file per symbol will be created.")
+                .takes_value(true)
+                .required(true)
         )
         .get_matches();
 
@@ -65,6 +76,8 @@ async fn main() {
 
     let markets: Vec<String> = matches.values_of("markets").unwrap().map(|m| m.to_owned()).collect();
     let num_workers: usize = matches.value_of_t("num-workers").unwrap();
+    let output_folder: String = matches.value_of_t("save-to").unwrap();
+    let trade_logger = TradeLogger::new(output_folder);
 
     info!("Starting ftx-listener for {}", markets.join(", "));
     let processors = (0..num_workers)
@@ -72,6 +85,7 @@ async fn main() {
             tokio::spawn(ingestion::ftx::run_async_processor(
                 markets.to_owned(),
                 Shutdown::new(shutdown_send.subscribe()),
+                trade_logger.clone(),
             ))
         })
         .collect::<FuturesUnordered<_>>();

@@ -2,19 +2,22 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::io;
 use ftx::options::Options;
-use ftx::ws::{Channel, Data, Orderbook, OrderbookData, Symbol, Ws};
+use ftx::ws::{Channel, Data, Orderbook, OrderbookData, Symbol, Trade, Ws};
 use futures::{Sink, SinkExt, StreamExt, TryStreamExt};
 use log::{error, info, warn};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use futures::channel::mpsc;
+
 use futures::never::Never;
 
 use crate::{Shutdown};
+use crate::digestion::TradeLogger;
 
 pub async fn run_async_processor(
     markets: Vec<String>,
     mut shutdown: Shutdown,
+    data_output: TradeLogger
 ) -> crate::Result<()> {
     let mut websocket = Ws::connect(Options::from_env()).await?;
 
@@ -27,18 +30,27 @@ pub async fn run_async_processor(
     let (orderbook_prod, orderbook_cons) = mpsc::channel::<(Symbol, OrderbookData)>(1000);
     let orderbook_updater = tokio::spawn(orderbook_cons.map(|update| Ok(update)).forward(orderbook));
 
+    let (trade_prod, trade_cons) = mpsc::channel::<(Symbol, Trade)>(1000);
+    let trade_logger = tokio::spawn(trade_cons.for_each(move |(symbol, trade)| {
+        let data_output = data_output.clone();
+        async move {
+            data_output.log_to_file(symbol, trade).await;
+        }
+    }));
+
     let stream_processor = websocket.try_for_each(|borrowed_message| {
         // Borrowed messages can't outlive the consumer they are received from, so they need to
         // be owned in order to be sent to a separate thread.
         let data = borrowed_message.to_owned();
         let mut orderbook_prod = orderbook_prod.clone();
+        let mut trade_prod = trade_prod.clone();
         async move {
             match data {
                 (Some(symbol), Data::Trade(trade)) => {
-                    println!(
-                        "\n{:?} {} {} at {} - liquidation = {}",
-                        trade.side, trade.size, symbol, trade.price, trade.liquidation
-                    );
+                    match trade_prod.send((symbol, trade)).await {
+                        Ok(_) => {}
+                        Err(e) => error!("Logging trade failed {}", e.to_string())
+                    };
                 }
                 (Some(symbol), Data::OrderbookData(orderbook_data)) => {
                     match orderbook_prod.send((symbol, orderbook_data)).await {
@@ -72,6 +84,10 @@ pub async fn run_async_processor(
     match orderbook_updater.await {
         Ok(_) => info!("Orderboook updater finished"),
         Err(e) => warn!("Orderboook updater: {}", e.to_string())
+    };
+    match trade_logger.await {
+        Ok(_) => info!("Trade logger finished"),
+        Err(e) => warn!("Trade logger: {}", e.to_string())
     };
     info!("Stream processor finished");
     Ok(())
@@ -114,3 +130,5 @@ impl Sink<(Symbol, OrderbookData)> for OrderbookSink {
         Poll::Ready(Ok(()))
     }
 }
+
+
