@@ -1,3 +1,4 @@
+use std::fs;
 use clap::{Arg, Command};
 use dotenv::dotenv;
 use futures::stream::FuturesUnordered;
@@ -77,6 +78,8 @@ async fn main() {
     let markets: Vec<String> = matches.values_of("markets").unwrap().map(|m| m.to_owned()).collect();
     let num_workers: usize = matches.value_of_t("num-workers").unwrap();
     let output_folder: String = matches.value_of_t("save-to").unwrap();
+    fs::create_dir_all(output_folder.as_str()).unwrap();
+
     let trade_logger = TradeLogger::new(output_folder);
 
     info!("Starting ftx-listener for {}", markets.join(", "));
