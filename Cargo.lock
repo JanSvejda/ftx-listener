@@ -345,6 +345,7 @@ dependencies = [
  "futures",
  "log",
  "rand",
+ "serde_json",
  "tokio",
  "tokio-postgres",
 ]

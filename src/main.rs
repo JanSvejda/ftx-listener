@@ -80,15 +80,13 @@ async fn main() {
     let output_folder: String = matches.value_of_t("save-to").unwrap();
     fs::create_dir_all(output_folder.as_str()).unwrap();
 
-    let trade_logger = TradeLogger::new(output_folder);
-
     info!("Starting ftx-listener for {}", markets.join(", "));
     let processors = (0..num_workers)
         .map(|_| {
             tokio::spawn(ingestion::ftx::run_async_processor(
                 markets.to_owned(),
                 Shutdown::new(shutdown_send.subscribe()),
-                trade_logger.clone(),
+                TradeLogger::new(output_folder.clone()),
             ))
         })
         .collect::<FuturesUnordered<_>>();
