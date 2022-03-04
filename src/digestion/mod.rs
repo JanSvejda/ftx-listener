@@ -10,7 +10,6 @@ use chrono::{Utc};
 use ftx::ws::{Data, Symbol};
 use futures::Sink;
 use log::error;
-use serde_json::json;
 
 
 pub struct TradeLogger {
