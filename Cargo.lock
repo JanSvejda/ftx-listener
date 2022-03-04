@@ -309,9 +309,7 @@ dependencies = [
 
 [[package]]
 name = "ftx"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "292d064843c04fb199c1a86cee279d877b82105150931fd2a949e01666d21c25"
+version = "0.4.4"
 dependencies = [
  "chrono",
  "crc32fast",

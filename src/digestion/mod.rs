@@ -68,14 +68,14 @@ impl Sink<(Symbol, Data)> for TradeLogger {
             }
             Some(file) => file
         };
-        let time = match data {
+        let time = match &data {
             Data::Ticker(d) => d.time,
             Data::Trade(d) => d.time,
             Data::OrderbookData(d) => d.time,
             Data::Fill(d) => d.time,
             Data::Order(_) => Utc::now()
         };
-        let row = symbol.to_owned() + "," + time.timestamp().to_string().as_str() + "," + "\n";
+        let row = symbol.to_owned() + "," + time.timestamp().to_string().as_str() + "," + serde_json::to_string(&data).unwrap_or("".to_string()).as_str() + "\n";
         file.write(row.as_bytes()).unwrap();
         Ok(())
     }
