@@ -13,13 +13,13 @@ use futures::never::Never;
 use log::{error, info, warn};
 use tokio::task::JoinHandle;
 
-use crate::digestion::TradeLogger;
+use crate::digestion::MarketDataLogger;
 use crate::Shutdown;
 
 pub async fn run_async_processor(
     markets: Vec<String>,
     mut shutdown: Shutdown,
-    data_output: TradeLogger
+    data_output: MarketDataLogger
 ) -> crate::Result<()> {
     let mut websocket = Ws::connect(Options::from_env()).await?;
 
@@ -32,21 +32,21 @@ pub async fn run_async_processor(
     let (mut orderbook_prod, orderbook_cons) = mpsc::channel::<(Symbol, OrderbookData)>(1000);
     let mut orderbook_updater = tokio::spawn(orderbook_cons.map(|update| Ok(update)).forward(orderbook));
 
-    let (mut trade_prod, trade_cons) = mpsc::channel::<(Symbol, Data)>(1000);
-    let mut trade_logger = tokio::spawn(trade_cons.map(|s| Ok(s)).forward(data_output));
+    let (mut market_data_prod, market_data_cons) = mpsc::channel::<(Symbol, Data)>(1000);
+    let mut market_data_logger = tokio::spawn(market_data_cons.map(|s| Ok(s)).forward(data_output));
 
     let stream_processor = websocket.try_for_each(|borrowed_message| {
         // Borrowed messages can't outlive the consumer they are received from, so they need to
         // be owned in order to be sent to a separate thread.
         let data = borrowed_message.to_owned();
         let mut orderbook_prod = orderbook_prod.clone();
-        let mut trade_prod = trade_prod.clone();
+        let mut market_data_prod = market_data_prod.clone();
         async move {
             match data {
                 (Some(symbol), data) => {
-                    match trade_prod.send((symbol.clone(), data.clone())).await {
+                    match market_data_prod.send((symbol.clone(), data.clone())).await {
                         Ok(_) => {}
-                        Err(e) => error!("Logging trade failed {}", e.to_string())
+                        Err(e) => error!("Logging market data failed {}", e.to_string())
                     };
                     if let Data::OrderbookData(data) = data {
                         match orderbook_prod.send((symbol, data)).await {
@@ -79,7 +79,7 @@ pub async fn run_async_processor(
     }
 
     close_producer(&mut orderbook_prod, &mut orderbook_updater, "orderbook").await;
-    close_producer(&mut trade_prod, &mut trade_logger, "trades").await;
+    close_producer(&mut market_data_prod, &mut market_data_logger, "market data").await;
     info!("Stream processor finished");
     Ok(())
 }
@@ -87,11 +87,12 @@ pub async fn run_async_processor(
 async fn close_producer<T, S>(producer: &mut Sender<T>, forwarder_handle: &mut JoinHandle<Result<(), S> >, name: &str) {
     match producer.close().await {
         Ok(_) => info!("Closed producer: {}", name),
-        Err(e) => error!("Unable to close trades producer {}", e.to_string()),
+        Err(e) => error!("Unable to close producer {}: {}", name, e.to_string()),
     };
     match forwarder_handle.await {
         Ok(_) => info!("Forwarder {} finished", name),
-        Err(e) => warn!("Trade logger: {}", e.to_string())
+        // todo - how not to cancel but process all remaining messages and then close?
+        Err(e) => warn!("Forwarder for {}: {}", name, e.to_string())
     };
 }
 

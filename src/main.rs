@@ -6,7 +6,7 @@ use futures::StreamExt;
 use log::{error, info};
 use tokio::signal;
 use tokio::sync::broadcast;
-use crate::digestion::TradeLogger;
+use crate::digestion::MarketDataLogger;
 
 use crate::infra::Shutdown;
 
@@ -86,7 +86,7 @@ async fn main() {
             tokio::spawn(ingestion::ftx::run_async_processor(
                 markets.to_owned(),
                 Shutdown::new(shutdown_send.subscribe()),
-                TradeLogger::new(output_folder.clone()),
+                MarketDataLogger::new(output_folder.clone()),
             ))
         })
         .collect::<FuturesUnordered<_>>();

@@ -14,7 +14,7 @@ use futures::Sink;
 use log::{error, info};
 
 
-pub struct TradeLogger {
+pub struct MarketDataLogger {
     path: PathBuf,
     opened_files: HashMap<String, File>, // optimization - map[str, channel], channel -> async file
     count: u64,
@@ -22,9 +22,9 @@ pub struct TradeLogger {
     log_rate: u64
 }
 
-impl TradeLogger {
+impl MarketDataLogger {
     pub fn new(path: String) -> Self {
-        TradeLogger {
+        MarketDataLogger {
             path: PathBuf::from(path),
             opened_files: HashMap::new(),
             count: 0,
@@ -34,7 +34,7 @@ impl TradeLogger {
     }
 }
 
-impl Sink<(Symbol, Data)> for TradeLogger {
+impl Sink<(Symbol, Data)> for MarketDataLogger {
     type Error = ();
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
