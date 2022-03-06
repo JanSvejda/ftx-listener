@@ -2,19 +2,24 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::ops::{AddAssign};
 use std::path::{PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use chrono::{Utc};
 use ftx::ws::{Data, Symbol};
 use futures::Sink;
-use log::error;
+use log::{error, info};
 
 
 pub struct TradeLogger {
     path: PathBuf,
-    opened_files: HashMap<String, File>,
+    opened_files: HashMap<String, File>, // optimization - map[str, channel], channel -> async file
+    count: u64,
+    last_log_instant: Instant,
+    log_rate: u64
 }
 
 impl TradeLogger {
@@ -22,6 +27,9 @@ impl TradeLogger {
         TradeLogger {
             path: PathBuf::from(path),
             opened_files: HashMap::new(),
+            count: 0,
+            last_log_instant: Instant::now(),
+            log_rate: 5000
         }
     }
 }
@@ -76,6 +84,12 @@ impl Sink<(Symbol, Data)> for TradeLogger {
         };
         let row = symbol.to_owned() + "," + time.timestamp().to_string().as_str() + "," + serde_json::to_string(&data).unwrap_or("".to_string()).as_str() + "\n";
         file.write(row.as_bytes()).unwrap();
+        self.count.add_assign(1);
+        if self.count % self.log_rate == 0 {
+            let msg_per_sec = (self.log_rate as f32) / (self.last_log_instant.elapsed().as_secs_f32());
+            info!("Processed {} messages, {} msgs/s.", self.count, msg_per_sec);
+            self.last_log_instant = Instant::now();
+        }
         Ok(())
     }
 
