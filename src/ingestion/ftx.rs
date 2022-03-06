@@ -1,18 +1,20 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::io;
+use std::io::Write;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use ftx::options::Options;
 use ftx::ws::{Channel, Data, Orderbook, OrderbookData, Symbol, Ws};
 use futures::{Sink, SinkExt, StreamExt, TryStreamExt};
-use log::{error, info, warn};
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use futures::channel::mpsc;
-
+use futures::channel::mpsc::Sender;
 use futures::never::Never;
+use log::{error, info, warn};
+use tokio::task::JoinHandle;
 
-use crate::{Shutdown};
 use crate::digestion::TradeLogger;
+use crate::Shutdown;
 
 pub async fn run_async_processor(
     markets: Vec<String>,
@@ -27,32 +29,32 @@ pub async fn run_async_processor(
     websocket.subscribe(channels).await?;
 
     let orderbook = OrderbookSink::new(markets);
-    let (orderbook_prod, orderbook_cons) = mpsc::channel::<(Symbol, OrderbookData)>(1000);
-    let orderbook_updater = tokio::spawn(orderbook_cons.map(|update| Ok(update)).forward(orderbook));
+    let (mut orderbook_prod, orderbook_cons) = mpsc::channel::<(Symbol, OrderbookData)>(1000);
+    let mut orderbook_updater = tokio::spawn(orderbook_cons.map(|update| Ok(update)).forward(orderbook));
 
-    let (trade_prod, trade_cons) = mpsc::channel::<(Symbol, Data)>(1000);
-    let trade_logger = tokio::spawn(trade_cons.map(|s| Ok(s)).forward(data_output));
+    let (mut trade_prod, trade_cons) = mpsc::channel::<(Symbol, Data)>(1000);
+    let mut trade_logger = tokio::spawn(trade_cons.map(|s| Ok(s)).forward(data_output));
 
     let stream_processor = websocket.try_for_each(|borrowed_message| {
         // Borrowed messages can't outlive the consumer they are received from, so they need to
         // be owned in order to be sent to a separate thread.
         let data = borrowed_message.to_owned();
-        let _orderbook_prod = orderbook_prod.clone();
+        let mut orderbook_prod = orderbook_prod.clone();
         let mut trade_prod = trade_prod.clone();
         async move {
             match data {
                 (Some(symbol), data) => {
-                    match trade_prod.send((symbol, data)).await {
+                    match trade_prod.send((symbol.clone(), data.clone())).await {
                         Ok(_) => {}
                         Err(e) => error!("Logging trade failed {}", e.to_string())
                     };
+                    if let Data::OrderbookData(data) = data {
+                        match orderbook_prod.send((symbol, data)).await {
+                            Ok(_) => {}
+                            Err(e) => error!("Orderbook update failed {}", e.to_string())
+                        };
+                    };
                 }
-                // (Some(symbol), Data::OrderbookData(orderbook_data)) => {
-                //     match orderbook_prod.send((symbol, orderbook_data)).await {
-                //         Ok(_) => {}
-                //         Err(e) => error!("Orderbook update failed {}", e.to_string())
-                //     };
-                // }
                 _ => panic!("Unexpected data type")
             }
             Ok(())
@@ -76,16 +78,21 @@ pub async fn run_async_processor(
         }
     }
 
-    match orderbook_updater.await {
-        Ok(_) => info!("Orderboook updater finished"),
-        Err(e) => warn!("Orderboook updater: {}", e.to_string())
-    };
-    match trade_logger.await {
-        Ok(_) => info!("Trade logger finished"),
-        Err(e) => warn!("Trade logger: {}", e.to_string())
-    };
+    close_producer(&mut orderbook_prod, &mut orderbook_updater, "orderbook").await;
+    close_producer(&mut trade_prod, &mut trade_logger, "trades").await;
     info!("Stream processor finished");
     Ok(())
+}
+
+async fn close_producer<T, S>(producer: &mut Sender<T>, forwarder_handle: &mut JoinHandle<Result<(), S> >, name: &str) {
+    match producer.close().await {
+        Ok(_) => info!("Closed producer: {}", name),
+        Err(e) => error!("Unable to close trades producer {}", e.to_string()),
+    };
+    match forwarder_handle.await {
+        Ok(_) => info!("Forwarder {} finished", name),
+        Err(e) => warn!("Trade logger: {}", e.to_string())
+    };
 }
 
 pub struct OrderbookSink {
@@ -109,8 +116,8 @@ impl Sink<(Symbol, OrderbookData)> for OrderbookSink {
     fn start_send(mut self: Pin<&mut Self>, item: (Symbol, OrderbookData)) -> Result<(), Self::Error> {
         if let Some(orderbook) = self.orderbook.get_mut(&item.0) {
             orderbook.update(&item.1);
-            print!("."); // To signify orderbook update
             io::stdout().flush().unwrap();
+
         } else {
             warn!("Attempted orderbook update for Unregistered symbol {}", item.0);
         }
