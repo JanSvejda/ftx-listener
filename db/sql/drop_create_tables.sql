@@ -8,17 +8,19 @@ drop table asset;
 create table if not exists asset
 (
     asset_id serial primary key,
-    name     varchar(40) not null
+    name     varchar(40) unique not null
 );
+insert into asset (name) values ('BTC-PERP');
 
 create table if not exists trades
 (
     asset_id integer     not null,
+    id serial,
     inserted timestamptz default current_timestamp,
     time     timestamptz not null,
     trades   jsonb       not null,
 
-    primary key (asset_id, time),
+    primary key (id, time),
     constraint asset_id_fkey foreign key (asset_id)
         references asset (asset_id) match simple
         on update no action on delete cascade

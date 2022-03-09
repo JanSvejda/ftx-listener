@@ -84,7 +84,7 @@ impl Sink<(Symbol, Data)> for MarketDataLogger {
         };
         let time = time.format("%s%.9f").to_string();
         let serialized_data = serde_json::to_string(&data).unwrap_or("".to_string());
-        let row = symbol.to_owned() + "," + time.as_str() + "," + serialized_data.as_str() + "\n";
+        let row = symbol.to_owned() + ";" + time.as_str() + ";" + serialized_data.as_str() + "\n";
         file.write(row.as_bytes()).unwrap();
         self.count.add_assign(1);
         if self.count % self.log_rate == 0 {

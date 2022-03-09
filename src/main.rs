@@ -80,7 +80,7 @@ async fn main() {
     let output_folder: String = matches.value_of_t("save-to").unwrap();
     fs::create_dir_all(output_folder.as_str()).unwrap();
 
-    info!("Starting ftx-listener for {}", markets.join(", "));
+    info!("Will subscribe to markets {}", markets.join(", "));
     let processors = (0..num_workers)
         .map(|_| {
             tokio::spawn(ingestion::ftx::run_async_processor(
