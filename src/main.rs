@@ -1,13 +1,14 @@
 use std::fs;
+
 use clap::{Arg, Command};
 use dotenv::dotenv;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info};
-use tokio::signal;
+use tokio::{signal};
 use tokio::sync::broadcast;
-use crate::digestion::MarketDataLogger;
 
+use crate::digestion::MarketDataLogger;
 use crate::infra::Shutdown;
 
 /// Error returned by most functions.
@@ -103,7 +104,9 @@ async fn main() {
                 },
             }
         },
-        _ = processors.for_each(|_| async { }) => {
+        _ = processors.for_each(|res| async {
+            res.unwrap().unwrap_or_else(|e| error!("Processor result: {}", e));
+        }) => {
             info!("Processors finished!")
         }
     }
