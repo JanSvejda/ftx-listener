@@ -90,7 +90,10 @@ async fn main() {
                 MarketDataLogger::new(output_folder.clone()),
             ))
         })
-        .collect::<FuturesUnordered<_>>();
+        .collect::<FuturesUnordered<_>>()
+        .for_each(|res| async {
+            res.unwrap().unwrap_or_else(|e| error!("Processor result: {}", e));
+        });
 
 
     // wait for all tasks and listen for ctrl+c
@@ -104,13 +107,10 @@ async fn main() {
                 },
             }
         },
-        _ = processors.for_each(|res| async {
-            res.unwrap().unwrap_or_else(|e| error!("Processor result: {}", e));
-        }) => {
+        _ = processors => {
             info!("Processors finished!")
         }
-    }
-    ;
+    };
 
     info!("Wait for system to shut down");
     drop(shutdown_send);

@@ -118,7 +118,6 @@ impl Sink<(Symbol, OrderbookData)> for OrderbookSink {
         if let Some(orderbook) = self.orderbook.get_mut(&item.0) {
             orderbook.update(&item.1);
             io::stdout().flush().unwrap();
-
         } else {
             warn!("Attempted orderbook update for Unregistered symbol {}", item.0);
         }
